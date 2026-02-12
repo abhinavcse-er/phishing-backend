@@ -1,4 +1,10 @@
-flask
-flask-cors
-gunicorn
-
+fastapi
+uvicorn
+scikit-learn
+pandas
+tldextract
+aiodns
+whois
+requests
+slowapi
+joblib
