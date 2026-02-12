@@ -8,3 +8,4 @@ whois
 requests
 slowapi
 joblib
+gunicorn
