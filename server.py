@@ -1,20 +1,22 @@
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, List
 from urllib.parse import urlparse
 from functools import lru_cache
 import re
 import math
+import joblib
+import os
+import pandas as pd
 
 # ==========================
 # Initialize App
 # ==========================
 app = FastAPI(
     title="Phishing Detection API",
-    version="5.0",
-    description="Stable Render-safe Phishing Detection API"
+    version="6.0",
+    description="ML + Heuristic Phishing Detection API"
 )
 
 # ==========================
@@ -36,6 +38,17 @@ API_KEYS = {"my-secret-key"}
 async def validate_key(x_api_key: str):
     if x_api_key not in API_KEYS:
         raise HTTPException(status_code=403, detail="Invalid API Key")
+
+# ==========================
+# Load ML Model
+# ==========================
+MODEL_PATH = "phishing_model.pkl"
+
+if os.path.exists(MODEL_PATH):
+    model = joblib.load(MODEL_PATH)
+else:
+    model = None
+    print("⚠ ML model not found, running heuristic only")
 
 # ==========================
 # Request Models
@@ -92,17 +105,17 @@ def extract_features(url: str) -> Dict[str, Any]:
     path = parsed.path or "/"
 
     features = {
-        "uses_https": parsed.scheme == "https",
+        "uses_https": int(parsed.scheme == "https"),
         "url_length": len(url),
         "host_length": len(hostname),
         "num_dots": hostname.count("."),
-        "has_at_symbol": "@" in url,
-        "has_hyphen": "-" in hostname,
-        "is_ip_host": bool(IP_RE.match(hostname)),
+        "has_at_symbol": int("@" in url),
+        "has_hyphen": int("-" in hostname),
+        "is_ip_host": int(bool(IP_RE.match(hostname))),
         "num_digits_host": count_digits(hostname),
-        "suspicious_tld": hostname.split(".")[-1] in SUSPICIOUS_TLDS,
-        "contains_punycode": PUNY_PREFIX in hostname,
-        "uses_shortener": hostname in URL_SHORTENERS,
+        "suspicious_tld": int(hostname.split(".")[-1] in SUSPICIOUS_TLDS),
+        "contains_punycode": int(PUNY_PREFIX in hostname),
+        "uses_shortener": int(hostname in URL_SHORTENERS),
         "query_length": len(parsed.query),
         "path_entropy": round(entropy(path), 3),
     }
@@ -114,46 +127,20 @@ def extract_features(url: str) -> Dict[str, Any]:
     }
 
 # ==========================
-# Scoring (Stable Heuristic Only)
+# ML Prediction
 # ==========================
-def score(details: Dict[str, Any]):
+def ml_predict(features: Dict[str, Any]):
 
-    f = details["features"]
-    risk = 0
+    if model is None:
+        return None
 
-    if not f["uses_https"]:
-        risk += 2
-
-    if f["is_ip_host"]:
-        risk += 4
-
-    if f["suspicious_tld"]:
-        risk += 3
-
-    if f["uses_shortener"]:
-        risk += 2
-
-    if f["contains_punycode"]:
-        risk += 2
-
-    if f["has_at_symbol"]:
-        risk += 3
-
-    if f["num_digits_host"] > 5:
-        risk += 2
-
-    final_score = min(100, int((risk / 18) * 100))
-
-    if final_score >= 60:
-        label = "likely_phishing"
-    elif final_score >= 30:
-        label = "suspicious"
-    else:
-        label = "probably_safe"
+    df = pd.DataFrame([features])
+    prediction = model.predict(df)[0]
+    prob = model.predict_proba(df)[0][1]
 
     return {
-        "risk_score": final_score,
-        "label": label
+        "ml_label": int(prediction),
+        "ml_probability": round(float(prob), 3)
     }
 
 # ==========================
@@ -171,12 +158,12 @@ async def scan(
     await validate_key(x_api_key)
 
     details = extract_features(body.url.strip())
-    verdict = score(details)
+    ml_result = ml_predict(details["features"])
 
     return {
         "ok": True,
         "details": details,
-        "verdict": verdict
+        "ml_result": ml_result
     }
 
 @app.post("/api/batch_scan")
@@ -190,10 +177,10 @@ async def batch_scan(
 
     for url in body.urls:
         details = extract_features(url.strip())
-        verdict = score(details)
+        ml_result = ml_predict(details["features"])
         results.append({
             "url": url,
-            "verdict": verdict
+            "ml_result": ml_result
         })
 
     return {
