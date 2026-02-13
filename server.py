@@ -1,64 +1,107 @@
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, List
 from urllib.parse import urlparse
-import re, socket, ssl, asyncio, aiodns, tldextract, math, joblib, whois, requests
-from functools import lru_cache
 from datetime import datetime
+from functools import lru_cache
+
+import re
+import socket
+import ssl
+import asyncio
+import aiodns
+import tldextract
+import math
+import joblib
+import whois
+import requests
+
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
-# Load ML model
+# ==========================
+# Load ML Model
+# ==========================
 ml_model = joblib.load("phishing_model.pkl")
 
-# ---------- Initialize App ----------
+# ==========================
+# Initialize App
+# ==========================
 app = FastAPI(
     title="Phishing Detection API",
-    version="3.0",
-    description="Industry-ready phishing detection API (async, ML + heuristic)"
+    version="3.1",
+    description="Industry-ready phishing detection API (Async + ML + Heuristic)"
 )
 
-# ---------- CORS ----------
+# ==========================
+# CORS
+# ==========================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # replace with frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- Rate Limiter ----------
+# ==========================
+# Rate Limiter Setup
+# ==========================
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
 
-# ---------- API Key ----------
-API_KEYS = {"my-secret-key"}  # replace with real keys
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded"}
+    )
 
-async def validate_key(x_api_key: str = Header(...)):
+# ==========================
+# API Keys
+# ==========================
+API_KEYS = {"my-secret-key"}
+
+async def validate_key(x_api_key: str):
     if x_api_key not in API_KEYS:
         raise HTTPException(status_code=403, detail="Invalid API Key")
 
-# ---------- Request Models ----------
+# ==========================
+# Request Models
+# ==========================
 class ScanRequest(BaseModel):
     url: str
 
 class BatchScanRequest(BaseModel):
     urls: List[str]
 
-# ---------- Constants ----------
+# ==========================
+# Constants
+# ==========================
 SUSPICIOUS_TLDS = {"zip","biz","top","country","gq","ml","cf","tk","work","men",
                    "loan","click","link"}
-BRAND_KEYWORDS = ["login","verify","update","secure","account","support","billing",
-                  "unlock","reset","confirm","invoice","security","pay","wallet","password"]
-TRUSTED_BRANDS = ["google","facebook","instagram","apple","microsoft","netflix",
-                  "amazon","paypal","bank","yahoo","outlook"]
+
+BRAND_KEYWORDS = ["login","verify","update","secure","account","support",
+                  "billing","unlock","reset","confirm","invoice","security",
+                  "pay","wallet","password"]
+
+TRUSTED_BRANDS = ["google","facebook","instagram","apple","microsoft",
+                  "netflix","amazon","paypal","bank","yahoo","outlook"]
+
 URL_SHORTENERS = {"bit.ly","tinyurl.com","goo.gl","t.co","ow.ly",
                   "is.gd","cutt.ly","rb.gy","buff.ly"}
+
 IP_RE = re.compile(r"^((25[0-5]|2[0-4]\d|[01]?\d?\d)(\.|$)){4}")
 PUNY_PREFIX = "xn--"
 
-# ---------- Helper Functions ----------
+# ==========================
+# Helper Functions
+# ==========================
 def safe_parse(url: str):
     if not re.match(r"^\w+://", url):
         url = "http://" + url
@@ -85,12 +128,11 @@ async def dns_resolves(hostname: str) -> bool:
         return False
 
 def ssl_valid(hostname: str) -> bool:
-    if not hostname.startswith("https"):
-        return False
     try:
         context = ssl.create_default_context()
-        with socket.create_connection((hostname.replace("https://","").split("/")[0], 443), timeout=3) as sock:
-            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+        host = hostname.replace("https://","").split("/")[0]
+        with socket.create_connection((host, 443), timeout=3) as sock:
+            with context.wrap_socket(sock, server_hostname=host) as ssock:
                 ssock.getpeercert()
         return True
     except:
@@ -100,35 +142,24 @@ def get_domain_age(domain: str) -> int:
     try:
         w = whois.whois(domain)
         creation_date = w.creation_date[0] if isinstance(w.creation_date, list) else w.creation_date
-        return (datetime.now() - creation_date).days
+        if creation_date:
+            return (datetime.now() - creation_date).days
+        return -1
     except:
         return -1
 
 def is_blacklisted(url: str) -> bool:
-    # Example with Google Safe Browsing API (replace API_KEY)
-    API_KEY = "YOUR_GOOGLE_SAFEBROWSING_KEY"
-    try:
-        response = requests.post(
-            f"https://safebrowsing.googleapis.com/v4/threatMatches:find?key={API_KEY}",
-            json={
-                "client": {"clientId": "app", "clientVersion": "1.0"},
-                "threatInfo": {
-                    "threatTypes": ["MALWARE","SOCIAL_ENGINEERING"],
-                    "platformTypes": ["ANY_PLATFORM"],
-                    "threatEntryTypes": ["URL"],
-                    "threatEntries": [{"url": url}]
-                }
-            }, timeout=3
-        )
-        return bool(response.json().get("matches"))
-    except:
-        return False
+    # Disabled by default (needs API key)
+    return False
 
-# ---------- Feature Extraction ----------
+# ==========================
+# Feature Extraction
+# ==========================
 @lru_cache(maxsize=1024)
 def extract_features_base(url: str) -> Dict[str, Any]:
     parsed = safe_parse(url)
     ext = tldextract.extract(parsed.netloc)
+
     hostname = parsed.netloc.lower()
     domain = f"{ext.domain}.{ext.suffix}" if ext.suffix else ext.domain
     subdomain = ext.subdomain or ""
@@ -165,87 +196,74 @@ def extract_features_base(url: str) -> Dict[str, Any]:
         }
     }
 
-async def extract_features(url: str) -> Dict[str, Any]:
+async def extract_features(url: str):
     details = extract_features_base(url)
     details["features"]["dns_resolves"] = await dns_resolves(details["hostname"])
     return details
 
-# ---------- Scoring Function ----------
-def score(details: Dict[str, Any]) -> Dict[str, Any]:
+# ==========================
+# Scoring
+# ==========================
+def score(details: Dict[str, Any]):
     f = details["features"]
     risk = 0
-    reasons = []
 
-    def add(points, reason, condition):
-        nonlocal risk
-        if condition:
-            risk += points
-            reasons.append({"points": points, "reason": reason})
+    if not f["uses_https"]: risk += 2
+    if f["is_ip_host"]: risk += 4
+    if f["suspicious_tld"]: risk += 3
+    if f["uses_shortener"]: risk += 2
+    if not f["dns_resolves"]: risk += 3
+    if f["contains_punycode"]: risk += 2
+    if f["domain_age_days"] >= 0 and f["domain_age_days"] < 30: risk += 2
 
-    add(2, "Not using HTTPS", not f["uses_https"])
-    add(4, "Host is an IP", f["is_ip_host"])
-    add(3, "Suspicious TLD", f["suspicious_tld"])
-    add(2, "URL shortener", f["uses_shortener"])
-    add(2, "Contains '@'", f["has_at_symbol"])
-    add(1, "Hyphenated domain", f["has_hyphen"])
-    add(1, "Port specified", f["has_port"])
-    add(2, "High subdomain entropy", f["subdomain_entropy"] >= 3.5)
-    add(2, "Brand mismatch", f["brand_mismatch"])
-    add(1, "Login/security keyword", f["keyword_in_path"])
-    add(1, "Long URL", f["url_length"] > 80)
-    add(1, "Many dots", f["num_dots"] >= 4)
-    add(1, "Many digits", f["num_digits_host"] >= 4)
-    add(3, "DNS does not resolve", not f.get("dns_resolves", True))
-    add(2, "Punycode detected", f["contains_punycode"])
-    add(1, "Long query string", f["query_len"] > 60)
-    add(2, "Domain age < 30 days", f["domain_age_days"] >=0 and f["domain_age_days"] < 30)
-    add(3, "Invalid SSL", not f["ssl_valid"])
-    add(5, "URL is blacklisted", f["is_blacklisted"])
+    heuristic_score = min(100, int((risk / 20) * 100))
 
-    heuristic_score = min(100, int((risk / 35) * 100))
+    feature_vector = [int(v) if isinstance(v,bool) else v
+                      for v in f.values()
+                      if isinstance(v,(int,float,bool))]
 
-    # ML Score
-    feature_vector = [v for v in f.values() if isinstance(v, (int,float,bool))]
-    ml_score = int(ml_model.predict_proba([feature_vector])[0][1]*100)
+    ml_score = int(ml_model.predict_proba([feature_vector])[0][1] * 100)
 
-    # Hybrid Score
     final_score = max(heuristic_score, ml_score)
+
     if final_score >= 60:
-        label, color = "likely_phishing", "red"
+        label = "likely_phishing"
     elif final_score >= 30:
-        label, color = "suspicious", "orange"
+        label = "suspicious"
     else:
-        label, color = "probably_safe", "green"
+        label = "probably_safe"
 
     return {
         "risk_score": final_score,
-        "label": label,
-        "color": color,
         "heuristic_score": heuristic_score,
         "ml_score": ml_score,
-        "reasons": sorted(reasons, key=lambda x: -x["points"])
+        "label": label
     }
 
-# ---------- API Endpoints ----------
+# ==========================
+# API Endpoints
+# ==========================
 @app.get("/")
 async def health():
     return {"status": "Phishing Detection API running"}
 
 @app.post("/api/scan")
 @limiter.limit("10/minute")
-async def scan(body: ScanRequest, api_key: str = Header(...)):
-    await validate_key(api_key)
+async def scan(request: Request, body: ScanRequest, x_api_key: str = Header(...)):
+    await validate_key(x_api_key)
     details = await extract_features(body.url.strip())
     verdict = score(details)
     return {"ok": True, "input": body.url, "details": details, "verdict": verdict}
 
 @app.post("/api/batch_scan")
 @limiter.limit("5/minute")
-async def batch_scan(body: BatchScanRequest, api_key: str = Header(...)):
-    await validate_key(api_key)
+async def batch_scan(request: Request, body: BatchScanRequest, x_api_key: str = Header(...)):
+    await validate_key(x_api_key)
+
     results = []
     for url in body.urls:
         details = await extract_features(url.strip())
         verdict = score(details)
-        results.append({"input": url, "details": details, "verdict": verdict})
+        results.append({"input": url, "verdict": verdict})
+
     return {"ok": True, "results": results}
