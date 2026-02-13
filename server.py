@@ -46,7 +46,6 @@ app.add_middleware(
     allow_credentials=False,  # 🔥 important change
     allow_methods=["*"],
     allow_headers=["*"],
-)
 
 )
 
