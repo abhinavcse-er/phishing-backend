@@ -166,12 +166,13 @@ def assess_url(details: Dict[str, Any]) -> Dict[str, Any]:
             expected = list(getattr(model, "feature_names_in_", []))
             if expected:
                 missing = [name for name in expected if name not in f]
-                extra = [name for name in f if name not in expected]
-                if missing or extra:
+                if missing:
                     ml_status = "feature_schema_mismatch"
-                    print(f"ML prediction skipped: feature schema mismatch; missing={missing}; extra={extra}")
+                    print(f"ML prediction skipped: missing model features={missing}")
                 else:
-                    frame = pd.DataFrame([{name: f[name] for name in expected}])
+                    # The model was trained on these columns only. Ignore additional
+                    # heuristic-only features and preserve the model's training order.
+                    frame = pd.DataFrame([{name: f[name] for name in expected}], columns=expected)
                     prediction = int(model.predict(frame)[0])
                     probability = None
                     if hasattr(model, "predict_proba"):
