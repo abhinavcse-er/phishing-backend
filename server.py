@@ -117,6 +117,12 @@ def extract_features(url: str) -> Dict[str, Any]:
         ),
         # Additional signals used by the transparent heuristic rules.
         "has_at_symbol": int("@" in url),
+        "uses_https": int(parsed.scheme == "https"),
+        "host_length": len(hostname),
+        "num_dots": hostname.count("."),
+        "has_hyphen": int("-" in hostname),
+        "is_ip_host": int(bool(IP_RE.match(hostname))),
+        "num_digits_host": sum(ch.isdigit() for ch in hostname),
         "suspicious_tld": int(tld in SUSPICIOUS_TLDS),
         "contains_punycode": int(PUNY_PREFIX in hostname),
         "uses_shortener": int(hostname in URL_SHORTENERS),
