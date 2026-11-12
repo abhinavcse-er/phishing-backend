@@ -199,24 +199,24 @@ def assess_url(details: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 frame = pd.DataFrame([f])
                 prediction = int(model.predict(frame)[0])
-                    probabilities = model.predict_proba(frame)[0] if hasattr(model, "predict_proba") else None
-                    predicted_confidence = None
-                    phishing_probability = None
-                    if probabilities is not None:
-                        classes = list(getattr(model, "classes_", []))
-                        predicted_index = classes.index(prediction) if prediction in classes else None
-                        if predicted_index is not None:
-                            predicted_confidence = round(float(probabilities[predicted_index]), 3)
-                        phishing_index = next((i for i, value in enumerate(classes) if int(value) == 0), None)
-                        if phishing_index is not None:
-                            phishing_probability = round(float(probabilities[phishing_index]), 3)
-                    ml_result = {
-                        "ml_label": prediction,
-                        "ml_label_text": ML_LABELS.get(prediction, "Unknown"),
-                        "ml_probability": predicted_confidence,
-                        "ml_phishing_probability": phishing_probability
-                    }
-                    ml_status = "used"
+                probabilities = model.predict_proba(frame)[0] if hasattr(model, "predict_proba") else None
+                predicted_confidence = None
+                phishing_probability = None
+                if probabilities is not None:
+                    classes = list(getattr(model, "classes_", []))
+                    predicted_index = classes.index(prediction) if prediction in classes else None
+                    if predicted_index is not None:
+                        predicted_confidence = round(float(probabilities[predicted_index]), 3)
+                    phishing_index = next((i for i, value in enumerate(classes) if int(value) == 0), None)
+                    if phishing_index is not None:
+                        phishing_probability = round(float(probabilities[phishing_index]), 3)
+                ml_result = {
+                    "ml_label": prediction,
+                    "ml_label_text": ML_LABELS.get(prediction, "Unknown"),
+                    "ml_probability": predicted_confidence,
+                    "ml_phishing_probability": phishing_probability
+                }
+                ml_status = "used"
         except Exception as exc:
             ml_status = "prediction_error"
             print(f"ML prediction skipped: {type(exc).__name__}: {exc}")
