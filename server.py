@@ -16,7 +16,7 @@ except Exception:
 
 app = FastAPI(
     title="Phishing Detection API",
-    version="7.0",
+    version="7.1",
     description="URL phishing detection using heuristic signals and optional ML model"
 )
 
@@ -129,28 +129,70 @@ def assess_url(details: Dict[str, Any]) -> Dict[str, Any]:
         label = "Safe"
 
     ml_result = None
+    ml_status = "model_not_loaded" if model is None else "pandas_unavailable"
     if model is not None and pd is not None:
         try:
-            frame = pd.DataFrame([f])
-            prediction = int(model.predict(frame)[0])
-            probability = None
-            if hasattr(model, "predict_proba"):
-                probabilities = model.predict_proba(frame)[0]
-                probability = round(float(max(probabilities)), 3)
-            ml_result = {"ml_label": prediction, "ml_probability": probability}
+            expected = list(getattr(model, "feature_names_in_", []))
+            if expected:
+                missing = [name for name in expected if name not in f]
+                extra = [name for name in f if name not in expected]
+                if missing or extra:
+                    ml_status = "feature_schema_mismatch"
+                    print(f"ML prediction skipped: feature schema mismatch; missing={missing}; extra={extra}")
+                else:
+                    frame = pd.DataFrame([{name: f[name] for name in expected}])
+                    prediction = int(model.predict(frame)[0])
+                    probability = None
+                    if hasattr(model, "predict_proba"):
+                        probabilities = model.predict_proba(frame)[0]
+                        probability = round(float(max(probabilities)), 3)
+                    ml_result = {"ml_label": prediction, "ml_probability": probability}
+                    ml_status = "used"
+            else:
+                frame = pd.DataFrame([f])
+                prediction = int(model.predict(frame)[0])
+                probability = None
+                if hasattr(model, "predict_proba"):
+                    probabilities = model.predict_proba(frame)[0]
+                    probability = round(float(max(probabilities)), 3)
+                ml_result = {"ml_label": prediction, "ml_probability": probability}
+                ml_status = "used"
         except Exception as exc:
-            # Keep the API available even if an older model expects a different feature schema.
-            print(f"ML prediction skipped: {exc}")
+            ml_status = "prediction_error"
+            print(f"ML prediction skipped: {type(exc).__name__}: {exc}")
 
     return {
         "verdict": {"label": label, "risk_score": score, "reasons": reasons},
         "details": details,
-        "ml_result": ml_result
+        "ml_result": ml_result,
+        "ml_status": ml_status
+    }
+
+@app.get("/diagnostics")
+async def diagnostics():
+    expected = list(getattr(model, "feature_names_in_", [])) if model is not None else []
+    runtime_features = [
+        "uses_https", "url_length", "host_length", "num_dots", "has_at_symbol",
+        "has_hyphen", "is_ip_host", "num_digits_host", "suspicious_tld",
+        "contains_punycode", "uses_shortener", "query_length", "path_entropy"
+    ]
+    missing = [name for name in expected if name not in runtime_features]
+    extra = [name for name in runtime_features if expected and name not in expected]
+    return {
+        "api_version": "7.1",
+        "model_loaded": model is not None,
+        "pandas_available": pd is not None,
+        "model_feature_count": len(expected) if expected else None,
+        "runtime_feature_count": len(runtime_features),
+        "model_features": expected or None,
+        "feature_schema_compatible": (not missing and not extra) if expected else None,
+        "missing_runtime_features": missing,
+        "unused_runtime_features": extra
     }
 
 @app.get("/")
 async def health():
-    return {"status": "Phishing Detection API running", "version": "7.0"}
+    return {"status": "Phishing Detection API running", "version": "7.1"}
 
 @app.get("/health")
 async def health_check():
