@@ -3,6 +3,7 @@ uvicorn
 gunicorn
 slowapi
 scikit-learn==1.7.1
+pandas
 aiodns
 tldextract
 python-whois
