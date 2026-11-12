@@ -81,20 +81,45 @@ def extract_features(url: str) -> Dict[str, Any]:
     parsed = safe_parse(url)
     hostname = (parsed.hostname or "").lower()
     path = parsed.path or "/"
+    tld = hostname.rsplit(".", 1)[-1] if "." in hostname else ""
+    labels = [part for part in hostname.split(".") if part]
+    common_tlds = {
+        "com", "org", "net", "edu", "gov", "in", "co", "uk", "de",
+        "io", "info", "biz", "app", "dev", "me", "ai"
+    }
+    tokens = [token for token in re.split(r"[^a-zA-Z0-9]+", url.lower()) if token]
+    path_extension = path.rsplit("/", 1)[-1].rsplit(".", 1)
+    suspicious_extensions = {
+        "exe", "scr", "bat", "cmd", "com", "pif", "js", "vbs",
+        "jar", "apk", "msi", "hta", "iso"
+    }
     features = {
-        "uses_https": int(parsed.scheme == "https"),
+        # Exact feature names expected by the trained RandomForest model.
         "url_length": len(url),
-        "host_length": len(hostname),
-        "num_dots": hostname.count("."),
+        "has_ip_address": int(bool(IP_RE.match(hostname))),
+        "dot_count": hostname.count("."),
+        "https_flag": int(parsed.scheme == "https"),
+        "url_entropy": round(entropy(url.lower()), 6),
+        "token_count": len(tokens),
+        "subdomain_count": max(0, len(labels) - 2),
+        "query_param_count": len([part for part in parsed.query.split("&") if part]),
+        "tld_length": len(tld),
+        "path_length": len(path),
+        "has_hyphen_in_domain": int("-" in hostname),
+        "number_of_digits": sum(ch.isdigit() for ch in hostname),
+        "tld_popularity": int(tld in common_tlds),
+        "suspicious_file_extension": int(
+            len(path_extension) == 2 and path_extension[-1].lower() in suspicious_extensions
+        ),
+        "domain_name_length": len(hostname),
+        "percentage_numeric_chars": round(
+            (sum(ch.isdigit() for ch in url) / max(1, len(url))) * 100, 4
+        ),
+        # Additional signals used by the transparent heuristic rules.
         "has_at_symbol": int("@" in url),
-        "has_hyphen": int("-" in hostname),
-        "is_ip_host": int(bool(IP_RE.match(hostname))),
-        "num_digits_host": sum(ch.isdigit() for ch in hostname),
-        "suspicious_tld": int(hostname.split(".")[-1] in SUSPICIOUS_TLDS),
+        "suspicious_tld": int(tld in SUSPICIOUS_TLDS),
         "contains_punycode": int(PUNY_PREFIX in hostname),
         "uses_shortener": int(hostname in URL_SHORTENERS),
-        "query_length": len(parsed.query),
-        "path_entropy": round(entropy(path), 3),
     }
     return {"parsed_url": parsed.geturl(), "hostname": hostname, "features": features}
 
@@ -171,13 +196,10 @@ def assess_url(details: Dict[str, Any]) -> Dict[str, Any]:
 @app.get("/diagnostics")
 async def diagnostics():
     expected = list(getattr(model, "feature_names_in_", [])) if model is not None else []
-    runtime_features = [
-        "uses_https", "url_length", "host_length", "num_dots", "has_at_symbol",
-        "has_hyphen", "is_ip_host", "num_digits_host", "suspicious_tld",
-        "contains_punycode", "uses_shortener", "query_length", "path_entropy"
-    ]
+    runtime_features = list(extract_features("https://example.com/")["features"].keys())
     missing = [name for name in expected if name not in runtime_features]
     extra = [name for name in runtime_features if expected and name not in expected]
+    classes = [str(value) for value in getattr(model, "classes_", [])] if model is not None else []
     return {
         "api_version": "7.1",
         "model_loaded": model is not None,
@@ -185,9 +207,10 @@ async def diagnostics():
         "model_feature_count": len(expected) if expected else None,
         "runtime_feature_count": len(runtime_features),
         "model_features": expected or None,
-        "feature_schema_compatible": (not missing and not extra) if expected else None,
+        "feature_schema_compatible": (not missing) if expected else None,
         "missing_runtime_features": missing,
-        "unused_runtime_features": extra
+        "additional_runtime_features": extra,
+        "model_classes": classes
     }
 
 @app.get("/")
