@@ -16,7 +16,7 @@ except Exception:
 
 app = FastAPI(
     title="Phishing Detection API",
-    version="7.1",
+    version="7.2",
     description="URL phishing detection using heuristic signals and optional ML model"
 )
 
@@ -58,6 +58,10 @@ URL_SHORTENERS = {
 }
 IP_RE = re.compile(r"^(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)$")
 PUNY_PREFIX = "xn--"
+
+# Verified against phishing_dataset.csv: class 0 samples are phishing URLs;
+# class 1 samples are legitimate URLs (e.g. Stack Overflow pages).
+ML_LABELS = {0: "Phishing", 1: "Safe"}
 
 def safe_parse(url: str):
     value = url.strip()
@@ -174,21 +178,45 @@ def assess_url(details: Dict[str, Any]) -> Dict[str, Any]:
                     # heuristic-only features and preserve the model's training order.
                     frame = pd.DataFrame([{name: f[name] for name in expected}], columns=expected)
                     prediction = int(model.predict(frame)[0])
-                    probability = None
-                    if hasattr(model, "predict_proba"):
-                        probabilities = model.predict_proba(frame)[0]
-                        probability = round(float(max(probabilities)), 3)
-                    ml_result = {"ml_label": prediction, "ml_probability": probability}
+                    probabilities = model.predict_proba(frame)[0] if hasattr(model, "predict_proba") else None
+                    predicted_confidence = None
+                    phishing_probability = None
+                    if probabilities is not None:
+                        classes = list(getattr(model, "classes_", []))
+                        predicted_index = classes.index(prediction) if prediction in classes else None
+                        if predicted_index is not None:
+                            predicted_confidence = round(float(probabilities[predicted_index]), 3)
+                        phishing_index = next((i for i, value in enumerate(classes) if int(value) == 0), None)
+                        if phishing_index is not None:
+                            phishing_probability = round(float(probabilities[phishing_index]), 3)
+                    ml_result = {
+                        "ml_label": prediction,
+                        "ml_label_text": ML_LABELS.get(prediction, "Unknown"),
+                        "ml_probability": predicted_confidence,
+                        "ml_phishing_probability": phishing_probability
+                    }
                     ml_status = "used"
             else:
                 frame = pd.DataFrame([f])
                 prediction = int(model.predict(frame)[0])
-                probability = None
-                if hasattr(model, "predict_proba"):
-                    probabilities = model.predict_proba(frame)[0]
-                    probability = round(float(max(probabilities)), 3)
-                ml_result = {"ml_label": prediction, "ml_probability": probability}
-                ml_status = "used"
+                    probabilities = model.predict_proba(frame)[0] if hasattr(model, "predict_proba") else None
+                    predicted_confidence = None
+                    phishing_probability = None
+                    if probabilities is not None:
+                        classes = list(getattr(model, "classes_", []))
+                        predicted_index = classes.index(prediction) if prediction in classes else None
+                        if predicted_index is not None:
+                            predicted_confidence = round(float(probabilities[predicted_index]), 3)
+                        phishing_index = next((i for i, value in enumerate(classes) if int(value) == 0), None)
+                        if phishing_index is not None:
+                            phishing_probability = round(float(probabilities[phishing_index]), 3)
+                    ml_result = {
+                        "ml_label": prediction,
+                        "ml_label_text": ML_LABELS.get(prediction, "Unknown"),
+                        "ml_probability": predicted_confidence,
+                        "ml_phishing_probability": phishing_probability
+                    }
+                    ml_status = "used"
         except Exception as exc:
             ml_status = "prediction_error"
             print(f"ML prediction skipped: {type(exc).__name__}: {exc}")
@@ -208,7 +236,7 @@ async def diagnostics():
     extra = [name for name in runtime_features if expected and name not in expected]
     classes = [str(value) for value in getattr(model, "classes_", [])] if model is not None else []
     return {
-        "api_version": "7.1",
+        "api_version": "7.2",
         "model_loaded": model is not None,
         "pandas_available": pd is not None,
         "model_feature_count": len(expected) if expected else None,
@@ -217,7 +245,8 @@ async def diagnostics():
         "feature_schema_compatible": (not missing) if expected else None,
         "missing_runtime_features": missing,
         "additional_runtime_features": extra,
-        "model_classes": classes
+        "model_classes": classes,
+        "model_label_mapping": {str(key): value for key, value in ML_LABELS.items()}
     }
 
 @app.get("/")
